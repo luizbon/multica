@@ -62,6 +62,10 @@ git push --force-with-lease origin custom
 
 If a rebase goes bad: `git rebase --abort`, then `git reset --hard upstream-<last-good-date>` on `custom` and re-apply the missing commits by hand.
 
+## Automation
+
+Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — running the fork-maintenance loop on the same platform being forked. The Autopilot should run the mechanical steps only (fetch/tag `main`, attempt the `custom` rebase, run `pnpm test` / `make check`) and stop short of `push --force-with-lease` on conflict — surface a task/issue for manual conflict resolution instead of resolving blindly.
+
 ## Deploying
 
 Build images from `custom` using upstream's `Dockerfile` / `Dockerfile.web` unmodified where possible — same conflict-avoidance logic as everything else here. Push to your own registry and deploy from there; don't deploy directly off `main`.
