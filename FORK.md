@@ -64,7 +64,17 @@ If a rebase goes bad: `git rebase --abort`, then `git reset --hard upstream-<las
 
 ## Automation
 
-Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — running the fork-maintenance loop on the same platform being forked. This section is the draft definition; commands below are meant to be run against your instance (they were not executed from here — this session has no credentials for it).
+Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — running the fork-maintenance loop on the same platform being forked. **Live**, created via the `multica` CLI against the local self-hosted instance (`http://localhost:8080`):
+
+| Object | ID | Note |
+|---|---|---|
+| Workspace | `40142403-7514-4b82-9045-5a1ba7757b7c` (`multica-fork`) | dedicated, keeps sync issues off the main board |
+| Agent | `61bfe3bd-a18c-4439-8ff8-e3e79e058817` ("Fork Sync") | bound to the local Claude Code runtime |
+| Project | `a64f796d-f20a-4bd8-bbaa-8ad08f117d6e` ("Fork Sync") | repo resource pinned to `custom` |
+| Autopilot | `286bc8b9-c5ea-4ac4-be29-07903369b680` ("Fork sync {{date}}") | `create_issue` mode, subscribed: Luiz Bon |
+| Trigger | `61a42ca0-0789-438a-9fab-797409c574db` | schedule, `0 9 * * 1`, `Australia/Sydney` — weekly Monday 9am |
+
+Commands to reproduce or modify this setup:
 
 ### Setup
 
@@ -74,15 +84,17 @@ Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — 
 multica workspace create --name "Multica Fork" --slug multica-fork --issue-prefix FORK
 multica workspace switch multica-fork
 
-# 2. An agent bound to a Bash-capable coding tool. Claude Code is the recommended
-#    first pick; reuse an existing agent if you already have one with repo access.
-multica agent create
-#   name: Fork Sync
-#   runtime: Claude Code
+# 2. An agent bound to a Bash-capable coding tool. `--runtime-id` is required
+#    (not a name) — get it from `multica runtime list --output json`; a daemon
+#    already running on this machine auto-registers one per workspace it belongs to.
+multica agent create --name "Fork Sync" --runtime-id <runtime-id> \
+  --instructions "You maintain a personal fork of multica-ai/multica. Follow the sync procedure in FORK.md at the repo root exactly. Never push to main. Never force-push custom except with --force-with-lease, and only after a clean rebase plus passing tests/checks."
 
-# 3. Attach the repo as project context — no CLI for this yet, use the UI:
-#    Projects -> New -> Resources -> add https://github.com/luizbon/multica,
-#    with resource_ref.ref pinned to `custom` so task checkout defaults there.
+# 3. A project with the repo attached, pinned to the custom branch (create
+#    doesn't take --ref; set it in a follow-up resource update):
+multica project create --title "Fork Sync" --repo https://github.com/luizbon/multica --lead "Fork Sync"
+#   note the printed resource id, then:
+multica project resource update <project-id> <resource-id> --ref custom
 ```
 
 ### The autopilot
@@ -110,22 +122,26 @@ PROMPT
 )" \
   --agent "Fork Sync" \
   --mode create_issue \
+  --project <project-id> \
+  --priority medium \
+  --subscriber "<your name>" \
   --output json
 # note the returned autopilot-id from the response, then:
 multica autopilot trigger-add <autopilot-id> \
-  --kind schedule --cron "0 9 * * 1" --timezone Australia/Sydney
+  --kind schedule --cron "0 9 * * 1" --timezone Australia/Sydney \
+  --label "weekly-monday-sydney"
 ```
 
-`create_issue` mode (not `run_only`) is deliberate here even though the prompt closes clean-sync issues itself: it gives every run — clean or not — a visible, commented record on the board, which doubles as the monitoring Multica's own docs recommend (autopilot failures don't send notifications or auto-retry, so an agent-level crash before it reaches step 4/5 just leaves a `failed` run in history with an open issue — check the Autopilot's run history occasionally, since nothing pages you).
+`create_issue` mode (not `run_only`) is deliberate here even though the prompt closes clean-sync issues itself: it gives every run — clean or not — a visible, commented record on the board, which doubles as the monitoring Multica's own docs recommend (autopilot failures don't send notifications or auto-retry, so an agent-level crash before it reaches step 4/5 just leaves a `failed` run in history with an open issue). `--subscriber` puts the created issue in your normal issue-subscription notifications, which covers that gap.
 
 ### Verifying it worked
 
 ```bash
-multica autopilot get <autopilot-id> --output json
-multica autopilot runs <autopilot-id> --output json
+multica autopilot get 286bc8b9-c5ea-4ac4-be29-07903369b680 --output json
+multica autopilot runs 286bc8b9-c5ea-4ac4-be29-07903369b680 --output json
 ```
 
-Use `multica autopilot trigger <autopilot-id>` for a manual run instead of waiting for Monday to test the setup.
+Use `multica autopilot trigger 286bc8b9-c5ea-4ac4-be29-07903369b680` for a manual run instead of waiting for Monday to test the setup.
 
 ## Deploying
 
