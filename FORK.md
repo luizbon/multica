@@ -64,12 +64,68 @@ If a rebase goes bad: `git rebase --abort`, then `git reset --hard upstream-<las
 
 ## Automation
 
-Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — running the fork-maintenance loop on the same platform being forked. Each run:
+Sync is driven by an Autopilot on the self-hosted Multica instance (not CI) — running the fork-maintenance loop on the same platform being forked. This section is the draft definition; commands below are meant to be run against your instance (they were not executed from here — this session has no credentials for it).
 
-1. Fetch upstream, tag `main` at the new sync point.
-2. Attempt the `custom` rebase onto `main`.
-3. **Clean rebase:** run `pnpm test` / `make check`; if they pass, `push --force-with-lease origin custom` automatically — no human in the loop.
-4. **Conflict, or tests/checks fail after a clean rebase:** abort/leave the rebase in place and surface a task/issue for manual resolution instead of pushing or resolving blindly.
+### Setup
+
+```bash
+# 1. Dedicated workspace, so weekly sync issues don't clutter your main board.
+#    Slug/issue-prefix are permanent — chosen here, not changeable later.
+multica workspace create --name "Multica Fork" --slug multica-fork --issue-prefix FORK
+multica workspace switch multica-fork
+
+# 2. An agent bound to a Bash-capable coding tool. Claude Code is the recommended
+#    first pick; reuse an existing agent if you already have one with repo access.
+multica agent create
+#   name: Fork Sync
+#   runtime: Claude Code
+
+# 3. Attach the repo as project context — no CLI for this yet, use the UI:
+#    Projects -> New -> Resources -> add https://github.com/luizbon/multica,
+#    with resource_ref.ref pinned to `custom` so task checkout defaults there.
+```
+
+### The autopilot
+
+```bash
+multica autopilot create \
+  --title "Fork sync {{date}}" \
+  --description "$(cat <<'PROMPT'
+Sync the `custom` branch of the multica fork with upstream.
+
+1. On the checked-out repo: `git remote add upstream https://github.com/multica-ai/multica.git`
+   if it isn't already configured.
+2. `git checkout main && git pull upstream main`, then `git push origin main`
+   (fast-forward only) and `git tag upstream-$(date +%F) main && git push origin --tags`.
+3. `git checkout custom && git rebase main`.
+4. If the rebase is clean: run `pnpm test` and `make check`. If both pass,
+   `git push --force-with-lease origin custom`, then comment on this issue with
+   a one-line summary ("synced cleanly, pushed") and close it.
+5. If the rebase conflicts, or tests/checks fail after a clean rebase: do NOT
+   push and do NOT resolve conflicts yourself. Leave the rebase in progress
+   (or `git rebase --abort` if that's cleaner to hand off), comment on this
+   issue with exactly which files conflicted or which check failed, and leave
+   the issue open for manual review.
+PROMPT
+)" \
+  --agent "Fork Sync" \
+  --mode create_issue \
+  --output json
+# note the returned autopilot-id from the response, then:
+multica autopilot trigger-add <autopilot-id> \
+  --kind schedule --cron "0 9 * * 1" --timezone Australia/Sydney
+```
+
+`create_issue` mode (not `run_only`) is deliberate here even though the prompt closes clean-sync issues itself: it gives every run — clean or not — a visible, commented record on the board, which doubles as the monitoring Multica's own docs recommend (autopilot failures don't send notifications or auto-retry, so an agent-level crash before it reaches step 4/5 just leaves a `failed` run in history with an open issue — check the Autopilot's run history occasionally, since nothing pages you).
+
+### Verifying it worked
+
+```bash
+multica autopilot get <autopilot-id> --output json
+multica autopilot runs <autopilot-id> --output json
+```
+
+Use `multica autopilot trigger <autopilot-id>` for a manual run instead of waiting for Monday to test the setup.
 
 ## Deploying
 
