@@ -2,6 +2,11 @@
 
 This file provides guidance to AI agents when working with code in this repository.
 
+> **Fork governance:** This is a personal fork tracking `upstream/main`
+> (see remotes). For how to manage the fork — branches, rebase cadence,
+> where customizations belong — read **FORK.md** first, before making
+> any change here.
+
 > **Single source of truth:** This file is a concise pointer document.
 > All authoritative architecture, coding rules, and conventions
 > live in **CLAUDE.md** at the project root. Read that file first.

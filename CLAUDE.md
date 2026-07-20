@@ -2,6 +2,10 @@
 
 Guidance for Claude Code when working in this repository. Keep this file short and authoritative: rules here should be hard to infer from code or easy to get wrong.
 
+> **Fork governance:** This is a personal fork tracking `upstream/main`.
+> Read **FORK.md** first for branches, rebase cadence, and where
+> customizations belong before making any change here.
+
 ## Conventions
 
 The source of truth for code naming, i18n glossary, and Chinese product voice is:
