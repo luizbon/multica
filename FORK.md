@@ -33,11 +33,7 @@ git tag upstream-$(date +%F) main
 
 ### Issue branches
 
-Per-issue work branches off `custom` using git-flow-style prefixes, not a
-bare `custom/issue-<n>` scheme — a plain `custom/issue-2` collides with the
-`custom` branch itself in git's ref namespace (a ref can't simultaneously be
-both a leaf and a directory), which made the original scheme unusable the
-first time an agent tried to push one. Prefix by change type instead:
+Per-issue work branches off `custom` using git-flow-style prefixes. Prefix by change type:
 
 - `feat/issue-<n>` — new functionality.
 - `fix/issue-<n>` — bug fixes.
@@ -45,9 +41,7 @@ first time an agent tried to push one. Prefix by change type instead:
 
 All three branch off `custom`, never off `main`. Land them into `custom`
 through a reviewed GitHub PR — agents must never merge or push directly into
-`custom` themselves. The only exception is an explicitly human-authorized
-docs-only commit (as with this file); treat that as a one-off, not a
-precedent. `main` is never touched except by the sync procedure below.
+`custom` themselves.
 
 ## Where customizations go (least conflict-prone first)
 
