@@ -458,6 +458,13 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to clean up agent invocation targets")
 			return
 		}
+		// Same app-layer cleanup for fallback targets — agent_fallback_target
+		// also has no agent_id FK (FORK-2), so it needs the same
+		// precede-the-delete treatment as invocation targets above.
+		if err := qtx.DeleteAgentFallbackTargetsByArchivedRuntimeAgents(r.Context(), rid); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to clean up agent fallback targets")
+			return
+		}
 		// Same app-layer cleanup for channel installations: channel_* has no
 		// workspace/agent FK (MUL-3515 §4), so an archived agent's bot
 		// installations would otherwise survive the hard-delete as orphans and
