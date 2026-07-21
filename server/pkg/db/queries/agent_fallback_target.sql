@@ -33,5 +33,5 @@ WHERE agent_id = $1;
 -- DeleteAgentInvocationTargetsByArchivedRuntimeAgents.
 DELETE FROM agent_fallback_target
 WHERE agent_id IN (
-    SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
+    SELECT a.id FROM agent a WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
 );
