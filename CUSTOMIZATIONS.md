@@ -21,3 +21,16 @@ Decision log for customizations made on top of upstream [multica-ai/multica](htt
   - `server/internal/service/builtin_skills/multica-creating-agents/references/creating-agents-source-map.md`
 - Risk tier (per FORK.md): 3 (edit to existing shared file)
 - Date: 2026-07-21
+
+## 3: Add rate-limit status registry for runtime/model pairs
+- Branch: feat/issue-3 (per FORK.md issue-branch scheme)
+- Files touched:
+  - `server/migrations/204_runtime_rate_limit.up.sql`, `.down.sql`
+  - `server/migrations/205_runtime_rate_limit_workspace_runtime_model_unique_index.up.sql`, `.down.sql`
+  - `server/pkg/db/queries/runtime_rate_limit.sql`
+  - `server/pkg/db/generated/runtime_rate_limit.sql.go`
+  - `server/pkg/db/generated/models.go`
+  - `server/internal/rateregistry/rateregistry.go`
+  - `server/internal/rateregistry/rateregistry_test.go`
+- Risk tier (per FORK.md): 3 (edit to existing shared file — `server/pkg/db/generated/models.go` is appended to by the generated-code update; everything else is net-new)
+- Date: 2026-07-21
