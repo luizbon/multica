@@ -31,6 +31,24 @@ Tag `main` at each sync so a bad rebase can always be rolled back to the last kn
 git tag upstream-$(date +%F) main
 ```
 
+### Issue branches
+
+Per-issue work branches off `custom` using git-flow-style prefixes, not a
+bare `custom/issue-<n>` scheme — a plain `custom/issue-2` collides with the
+`custom` branch itself in git's ref namespace (a ref can't simultaneously be
+both a leaf and a directory), which made the original scheme unusable the
+first time an agent tried to push one. Prefix by change type instead:
+
+- `feat/issue-<n>` — new functionality.
+- `fix/issue-<n>` — bug fixes.
+- `chore/issue-<n>` — maintenance, tooling, docs.
+
+All three branch off `custom`, never off `main`. Land them into `custom`
+through a reviewed GitHub PR — agents must never merge or push directly into
+`custom` themselves. The only exception is an explicitly human-authorized
+docs-only commit (as with this file); treat that as a one-off, not a
+precedent. `main` is never touched except by the sync procedure below.
+
 ## Where customizations go (least conflict-prone first)
 
 1. **Env / compose overrides** — copy `.env.example` to `.env` for config. For Docker changes, add a `docker-compose.custom.yml` and layer it on top instead of editing `docker-compose.selfhost.yml` directly:
