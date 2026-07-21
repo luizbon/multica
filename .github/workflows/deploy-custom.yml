@@ -1,0 +1,16 @@
+name: Deploy custom
+
+on:
+  push:
+    branches: [custom]
+
+jobs:
+  trigger-deploy:
+    # This deploy webhook is only configured on the canonical upstream repo.
+    # Forks (including this repo) should skip instead of failing on missing or
+    # invalid secrets.
+    if: github.repository_owner == 'multica-ai'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Multica deploy webhook
+        run: curl --fail --show-error --silent -X POST "${{ secrets.MULTICA_DEPLOY_WEBHOOK_URL }}"
