@@ -175,6 +175,7 @@ func init() {
 	agentCreateCmd.Flags().String("permission-mode", "", "Invocation permission mode: private (owner only) or public_to (allow-list via --public-to-*). Authoritative over --visibility when set.")
 	agentCreateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentCreateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
+	agentCreateCmd.Flags().StringArray("fallback-target", nil, "Ordered fallback (runtime, model) pair to try when the primary runtime is unavailable, as <runtime-id> or <runtime-id>:<model>. Repeatable; order is the fallback priority (first = tried first). Not yet consumed by task orchestration — config storage only.")
 	agentCreateCmd.Flags().Int32("max-concurrent-tasks", 6, "Maximum concurrent tasks")
 	agentCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -202,6 +203,8 @@ func init() {
 	agentUpdateCmd.Flags().String("permission-mode", "", "New invocation permission mode: private or public_to. Authoritative over --visibility. Owner-only.")
 	agentUpdateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentUpdateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
+	agentUpdateCmd.Flags().StringArray("fallback-target", nil, "New ordered fallback (runtime, model) pair, as <runtime-id> or <runtime-id>:<model>. Repeatable; order is the fallback priority. Passing this flag at all (including with no values via --clear-fallback-targets) replaces the whole list.")
+	agentUpdateCmd.Flags().Bool("clear-fallback-targets", false, "Clear the agent's fallback target list (send an explicit empty list).")
 	agentUpdateCmd.Flags().String("status", "", "New status")
 	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks")
 	agentUpdateCmd.Flags().String("output", "json", "Output format: table or json")
@@ -528,6 +531,38 @@ func applyAgentPermissionFlags(cmd *cobra.Command, body map[string]any) {
 	body["invocation_targets"] = targets
 }
 
+// parseFallbackTargetFlag splits one --fallback-target value of the form
+// "<runtime-id>" or "<runtime-id>:<model>" into the wire shape the server
+// expects. model is omitted from the map (not sent as an empty string) when
+// absent, so the server's fallback DTO decodes it as nil rather than "".
+func parseFallbackTargetFlag(raw string) (map[string]any, error) {
+	runtimeID, model, _ := strings.Cut(raw, ":")
+	if runtimeID == "" {
+		return nil, fmt.Errorf("--fallback-target value %q must start with a runtime id", raw)
+	}
+	target := map[string]any{"runtime_id": runtimeID}
+	if model != "" {
+		target["model"] = model
+	}
+	return target, nil
+}
+
+// fallbackTargetsFromFlags builds the ordered fallback_targets list from
+// repeated --fallback-target flags, preserving flag order as the fallback
+// priority (FORK-2).
+func fallbackTargetsFromFlags(cmd *cobra.Command) ([]map[string]any, error) {
+	raw, _ := cmd.Flags().GetStringArray("fallback-target")
+	targets := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		t, err := parseFallbackTargetFlag(r)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, t)
+	}
+	return targets, nil
+}
+
 func runAgentCreate(cmd *cobra.Command, _ []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -596,6 +631,13 @@ func runAgentCreate(cmd *cobra.Command, _ []string) error {
 		body["visibility"] = v
 	}
 	applyAgentPermissionFlags(cmd, body)
+	if cmd.Flags().Changed("fallback-target") {
+		targets, err := fallbackTargetsFromFlags(cmd)
+		if err != nil {
+			return err
+		}
+		body["fallback_targets"] = targets
+	}
 	if cmd.Flags().Changed("max-concurrent-tasks") {
 		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
 		body["max_concurrent_tasks"] = v
@@ -673,6 +715,19 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		body["visibility"] = v
 	}
 	applyAgentPermissionFlags(cmd, body)
+	clearFallback, _ := cmd.Flags().GetBool("clear-fallback-targets")
+	if clearFallback && cmd.Flags().Changed("fallback-target") {
+		return fmt.Errorf("--clear-fallback-targets and --fallback-target are mutually exclusive")
+	}
+	if clearFallback {
+		body["fallback_targets"] = []map[string]any{}
+	} else if cmd.Flags().Changed("fallback-target") {
+		targets, err := fallbackTargetsFromFlags(cmd)
+		if err != nil {
+			return err
+		}
+		body["fallback_targets"] = targets
+	}
 	if cmd.Flags().Changed("status") {
 		v, _ := cmd.Flags().GetString("status")
 		body["status"] = v
@@ -688,7 +743,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --custom-args, --mcp-config, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
+		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --thinking-level, --custom-args, --mcp-config, --visibility, --status, --max-concurrent-tasks, --fallback-target, or --clear-fallback-targets (env vars now live behind `multica agent env set <id>`)")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())

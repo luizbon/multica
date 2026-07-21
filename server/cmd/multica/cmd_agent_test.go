@@ -1803,3 +1803,254 @@ func TestAgentCreateThinkingLevelServerRejectionSurfaces(t *testing.T) {
 		t.Fatalf("server thinking_level rejection should surface to the user; got: %v", err)
 	}
 }
+
+// TestParseFallbackTargetFlag covers the "<runtime-id>" / "<runtime-id>:<model>"
+// splitting rule: model is omitted from the map entirely (not sent as "")
+// when absent, so the server's tri-state DTO decodes it as nil rather than a
+// blank model string (FORK-2).
+func TestParseFallbackTargetFlag(t *testing.T) {
+	t.Run("runtime id only", func(t *testing.T) {
+		got, err := parseFallbackTargetFlag("runtime-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]any{"runtime_id": "runtime-1"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("runtime id and model", func(t *testing.T) {
+		got, err := parseFallbackTargetFlag("runtime-1:gpt-fallback")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]any{"runtime_id": "runtime-1", "model": "gpt-fallback"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("model containing a colon is preserved via Cut's single split", func(t *testing.T) {
+		got, err := parseFallbackTargetFlag("runtime-1:vendor:model-x")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]any{"runtime_id": "runtime-1", "model": "vendor:model-x"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("empty runtime id is rejected", func(t *testing.T) {
+		if _, err := parseFallbackTargetFlag(":model-only"); err == nil {
+			t.Fatal("expected error for missing runtime id")
+		}
+	})
+
+	t.Run("empty string is rejected", func(t *testing.T) {
+		if _, err := parseFallbackTargetFlag(""); err == nil {
+			t.Fatal("expected error for empty flag value")
+		}
+	})
+}
+
+// TestAgentCreateSendsFallbackTargets covers the repeatable --fallback-target
+// flag on create: order must be preserved as the fallback priority, and a
+// bare runtime id (no model) must omit the model key rather than sending "".
+func TestAgentCreateSendsFallbackTargets(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().StringArray("fallback-target", nil, "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+	_ = cmd.Flags().Set("fallback-target", "runtime-2:model-b")
+	_ = cmd.Flags().Set("fallback-target", "runtime-3")
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+
+	targets, ok := gotBody["fallback_targets"].([]any)
+	if !ok || len(targets) != 2 {
+		t.Fatalf("fallback_targets body = %v, want a 2-element list", gotBody["fallback_targets"])
+	}
+	first, _ := targets[0].(map[string]any)
+	if first["runtime_id"] != "runtime-2" || first["model"] != "model-b" {
+		t.Fatalf("first target = %v, want runtime-2/model-b", first)
+	}
+	second, _ := targets[1].(map[string]any)
+	if second["runtime_id"] != "runtime-3" {
+		t.Fatalf("second target = %v, want runtime-3", second)
+	}
+	if _, hasModel := second["model"]; hasModel {
+		t.Fatalf("second target must omit model key when absent, got %v", second)
+	}
+}
+
+// TestAgentCreateOmitsFallbackTargetsWhenUnset guards the Changed-gated send:
+// no --fallback-target flag at all must not put the key in the body, so the
+// server defaults to an empty list instead of receiving an explicit one.
+func TestAgentCreateOmitsFallbackTargetsWhenUnset(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().StringArray("fallback-target", nil, "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+	if _, ok := gotBody["fallback_targets"]; ok {
+		t.Fatalf("unset --fallback-target must be omitted from the body; got %v", gotBody)
+	}
+}
+
+// TestAgentUpdateSendsFallbackTargets covers the PUT tri-state contract from
+// the update side: --fallback-target replaces the whole list in flag order,
+// and --clear-fallback-targets sends an explicit empty list.
+func TestAgentUpdateSendsFallbackTargets(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	t.Run("--fallback-target replaces the list", func(t *testing.T) {
+		gotBody = nil
+		cmd := &cobra.Command{Use: "update"}
+		cmd.Flags().StringArray("fallback-target", nil, "")
+		cmd.Flags().Bool("clear-fallback-targets", false, "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		_ = cmd.Flags().Set("fallback-target", "runtime-9:model-z")
+
+		if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+			t.Fatalf("runAgentUpdate: %v", err)
+		}
+		targets, ok := gotBody["fallback_targets"].([]any)
+		if !ok || len(targets) != 1 {
+			t.Fatalf("fallback_targets body = %v, want a 1-element list", gotBody["fallback_targets"])
+		}
+		entry, _ := targets[0].(map[string]any)
+		if entry["runtime_id"] != "runtime-9" || entry["model"] != "model-z" {
+			t.Fatalf("target = %v, want runtime-9/model-z", entry)
+		}
+	})
+
+	t.Run("--clear-fallback-targets sends an explicit empty list", func(t *testing.T) {
+		gotBody = nil
+		cmd := &cobra.Command{Use: "update"}
+		cmd.Flags().StringArray("fallback-target", nil, "")
+		cmd.Flags().Bool("clear-fallback-targets", false, "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		_ = cmd.Flags().Set("clear-fallback-targets", "true")
+
+		if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+			t.Fatalf("runAgentUpdate: %v", err)
+		}
+		targets, ok := gotBody["fallback_targets"].([]any)
+		if !ok || len(targets) != 0 {
+			t.Fatalf("fallback_targets body = %v, want an explicit empty list", gotBody["fallback_targets"])
+		}
+	})
+
+	t.Run("neither flag set omits the key entirely", func(t *testing.T) {
+		gotBody = nil
+		cmd := &cobra.Command{Use: "update"}
+		cmd.Flags().StringArray("fallback-target", nil, "")
+		cmd.Flags().Bool("clear-fallback-targets", false, "")
+		cmd.Flags().String("description", "", "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		_ = cmd.Flags().Set("description", "unrelated update")
+
+		if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+			t.Fatalf("runAgentUpdate: %v", err)
+		}
+		if _, ok := gotBody["fallback_targets"]; ok {
+			t.Fatalf("neither flag set must omit fallback_targets from the body; got %v", gotBody)
+		}
+	})
+}
+
+// TestAgentUpdateFallbackTargetsMutualExclusion guards the CLI-side guard
+// rejecting --fallback-target combined with --clear-fallback-targets before
+// any request is sent — the two flags express contradictory intents.
+func TestAgentUpdateFallbackTargetsMutualExclusion(t *testing.T) {
+	cmd := &cobra.Command{Use: "update"}
+	cmd.Flags().StringArray("fallback-target", nil, "")
+	cmd.Flags().Bool("clear-fallback-targets", false, "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("fallback-target", "runtime-1")
+	_ = cmd.Flags().Set("clear-fallback-targets", "true")
+
+	err := runAgentUpdate(cmd, []string{"agent-123"})
+	if err == nil {
+		t.Fatal("expected error when both --fallback-target and --clear-fallback-targets are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %v, want mutually exclusive", err)
+	}
+}
+
+// TestAgentCreateAndUpdateExposeFallbackTargetFlag guarantees the flags stay
+// wired on both write surfaces (FORK-2).
+func TestAgentCreateAndUpdateExposeFallbackTargetFlag(t *testing.T) {
+	if agentCreateCmd.Flag("fallback-target") == nil {
+		t.Error("agent create must expose --fallback-target")
+	}
+	if agentUpdateCmd.Flag("fallback-target") == nil {
+		t.Error("agent update must expose --fallback-target")
+	}
+	if agentUpdateCmd.Flag("clear-fallback-targets") == nil {
+		t.Error("agent update must expose --clear-fallback-targets")
+	}
+}

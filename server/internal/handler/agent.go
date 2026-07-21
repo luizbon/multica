@@ -65,10 +65,15 @@ type AgentResponse struct {
 	// InvocationTargets is the allow-list for a public_to agent. Empty for
 	// private agents. Only populated on the detail / list / create / update
 	// responses that load it; broadcast payloads leave it empty.
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             string                     `json:"status"`
-	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
+	InvocationTargets []AgentInvocationTargetDTO `json:"invocation_targets"`
+	// FallbackTargets is the ordered list of (runtime, model) pairs to try
+	// when the primary runtime_id is unavailable (FORK-2). List order is the
+	// fallback priority (first entry = tried first). Empty when unset. Not
+	// yet consumed by the daemon or task orchestration — config storage only.
+	FallbackTargets    []AgentFallbackTargetDTO `json:"fallback_targets"`
+	Status             string                   `json:"status"`
+	MaxConcurrentTasks int32                    `json:"max_concurrent_tasks"`
+	Model              string                   `json:"model"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -168,6 +173,7 @@ func agentToResponse(a db.Agent) AgentResponse {
 		Visibility:               a.Visibility,
 		PermissionMode:           a.PermissionMode,
 		InvocationTargets:        []AgentInvocationTargetDTO{},
+		FallbackTargets:          []AgentFallbackTargetDTO{},
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
@@ -817,6 +823,11 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
 		return
 	}
+	fallbackTargetsByAgent, ok := h.loadFallbackTargetsByAgent(r.Context(), agents)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "failed to load agent fallback targets")
+		return
+	}
 	visible := make([]AgentResponse, 0, len(agents))
 	for _, a := range agents {
 		targets := targetsByAgent[uuidToString(a.ID)]
@@ -827,6 +838,7 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		resp := agentToResponse(a)
 		applyInvocationTargetsToResponse(&resp, targets)
+		applyFallbackTargetsToResponse(&resp, fallbackTargetsByAgent[uuidToString(a.ID)])
 		if skills, ok := skillMap[resp.ID]; ok {
 			resp.Skills = skills
 		}
@@ -876,6 +888,9 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := agentToResponse(agent)
 	if !h.enrichAgentResponseWithTargetsHTTP(w, r, &resp, agent.ID) {
+		return
+	}
+	if !h.enrichAgentResponseWithFallbackTargetsHTTP(w, r, &resp, agent.ID) {
 		return
 	}
 	// Use the summary query (no `content` column) — the embedded
@@ -932,11 +947,16 @@ type CreateAgentRequest struct {
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
 	// (private -> private, workspace -> public_to+workspace target). On create
 	// only the caller can be the owner, so targets are accepted unconditionally.
-	PermissionMode     *string                    `json:"permission_mode"`
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
-	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
-	ThinkingLevel      string                     `json:"thinking_level"`
+	PermissionMode    *string                    `json:"permission_mode"`
+	InvocationTargets []AgentInvocationTargetDTO `json:"invocation_targets"`
+	// FallbackTargets seeds the ordered fallback (runtime, model) list
+	// (FORK-2). Each runtime_id is validated to resolve to a runtime in the
+	// workspace, same rule as the primary RuntimeID. List order is the
+	// fallback priority. Defaults to empty when omitted.
+	FallbackTargets    []AgentFallbackTargetDTO `json:"fallback_targets"`
+	MaxConcurrentTasks int32                    `json:"max_concurrent_tasks"`
+	Model              string                   `json:"model"`
+	ThinkingLevel      string                   `json:"thinking_level"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1045,6 +1065,14 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
 		writeError(w, http.StatusForbidden, "this runtime is private; only its owner or a workspace admin can create agents on it")
+		return
+	}
+
+	// Fallback targets (FORK-2): each runtime_id must resolve to a runtime in
+	// this workspace, same rule as the primary runtime_id above.
+	fallbackSpecs, err := h.parseFallbackTargetsInput(r.Context(), wsUUID, req.FallbackTargets)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1160,6 +1188,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save agent access")
 		return
 	}
+	if err := replaceAgentFallbackTargetsWithQueries(r.Context(), qtx, created.ID, fallbackSpecs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save agent fallback targets")
+		return
+	}
 	for _, skillID := range skillUUIDs {
 		if err := qtx.AddAgentSkill(r.Context(), db.AddAgentSkillParams{
 			AgentID: created.ID,
@@ -1186,6 +1218,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, created.ID); err != nil {
 		slog.Warn("create agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(created.ID))...)
+	}
+	if err := h.enrichAgentResponseWithFallbackTargets(r.Context(), &resp, created.ID); err != nil {
+		slog.Warn("create agent: load fallback targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(created.ID))...)
 	}
 	actorType, actorID := h.resolveActor(r, ownerID, workspaceID)
 	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
@@ -1285,11 +1320,18 @@ type UpdateAgentRequest struct {
 	// gate is owner/allow-list based and an admin-authored allow-list would
 	// confuse the owner about who can run their agent. permission_mode is
 	// authoritative when present; otherwise legacy visibility is mapped.
-	PermissionMode     *string                     `json:"permission_mode"`
-	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
-	Status             *string                     `json:"status"`
-	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
-	Model              *string                     `json:"model"`
+	PermissionMode    *string                     `json:"permission_mode"`
+	InvocationTargets *[]AgentInvocationTargetDTO `json:"invocation_targets"`
+	// FallbackTargets is a tri-state, same pattern as mcp_config:
+	//   - field omitted → no change (existing list preserved)
+	//   - field present (including `[]`) → wholesale replace, in submitted order
+	// The decode-time raw fields map disambiguates "omitted" from "present"
+	// (a nil pointer can't). Each runtime_id is re-validated against the
+	// current workspace, same rule as CreateAgent. FORK-2.
+	FallbackTargets    *[]AgentFallbackTargetDTO `json:"fallback_targets"`
+	Status             *string                   `json:"status"`
+	MaxConcurrentTasks *int32                    `json:"max_concurrent_tasks"`
+	Model              *string                   `json:"model"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -1583,6 +1625,27 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
 	}
+
+	// Fallback targets (FORK-2): tri-state on presence in the raw request
+	// body (see UpdateAgentRequest doc). Validated the same way as create —
+	// each runtime_id must resolve to a runtime in this workspace.
+	_, hasFallbackTargets := rawFields["fallback_targets"]
+	replaceFallbackTargets := false
+	var fallbackSpecs []fallbackTargetSpec
+	if hasFallbackTargets {
+		var targetsDTO []AgentFallbackTargetDTO
+		if req.FallbackTargets != nil {
+			targetsDTO = *req.FallbackTargets
+		}
+		specs, err := h.parseFallbackTargetsInput(r.Context(), existing.WorkspaceID, targetsDTO)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		fallbackSpecs = specs
+		replaceFallbackTargets = true
+	}
+
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
 	// who can run their agent — the overlay uses the owner's own Composio
@@ -1787,10 +1850,25 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fallback targets (FORK-2): wholesale replace when the field was present
+	// in the request body (see the tri-state parsing above).
+	if replaceFallbackTargets {
+		if err := h.replaceAgentFallbackTargets(r.Context(), updated.ID, fallbackSpecs); err != nil {
+			slog.Warn("update agent: persist fallback targets failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update fallback targets: "+err.Error())
+			return
+		}
+	}
+
 	resp := agentToResponse(updated)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("update agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
+		return
+	}
+	if err := h.enrichAgentResponseWithFallbackTargets(r.Context(), &resp, updated.ID); err != nil {
+		slog.Warn("update agent: load fallback targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent fallback targets")
 		return
 	}
 	// agentToResponse always initialises Skills as []; junction-table rows
