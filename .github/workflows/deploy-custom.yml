@@ -4,6 +4,8 @@ on:
   push:
     branches: [custom]
 
+permissions: {}
+
 jobs:
   trigger-deploy:
     # This deploy webhook is only configured on the canonical upstream repo.
