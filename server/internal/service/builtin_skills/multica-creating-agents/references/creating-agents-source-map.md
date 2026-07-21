@@ -23,6 +23,11 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | Secret-safe MCP input: `mcp-config`, `mcp-config-stdin`, `mcp-config-file` (create) | 170–172 | Same three-channel pattern as `custom-env`; `--mcp-config` warns about shell history / `ps`; value must be a JSON object or `null` | `multica agent create --help` |
 | MCP flags on `agent update` | 194–196 | Same three channels on update; `--mcp-config null` clears. Unlike `custom_env`, `mcp_config` IS settable via update | `multica agent update --help` |
 | `thinking-level` flag on `agent update` | 184 | New reasoning/effort level; Codex values come from the runtime catalog; thin pass-through; `--thinking-level ""` clears to runtime default (mirrors `--model`) | `multica agent update --help` |
+| `fallback-target` repeatable flag (create + update) | 178, 206 | `StringArray`, values `<runtime-id>` or `<runtime-id>:<model>`; order = fallback priority (FORK-2) | `multica agent create --help` / `multica agent update --help` |
+| `clear-fallback-targets` flag (update only) | 207 | Sends an explicit empty `fallback_targets` list; mutually exclusive with `--fallback-target`, checked in `runAgentUpdate` (719–720) | `multica agent update --help` |
+| `parseFallbackTargetFlag` / `fallbackTargetsFromFlags` helpers | 538, 553 | Split `<runtime-id>[:model]`, build the ordered `fallback_targets` body list from repeated flags | read 534–561 |
+| `runAgentCreate` sends `fallback_targets` | 634–636 | `Changed`-gated, same pattern as other optional create fields | read 634–636 |
+| `runAgentUpdate` sends `fallback_targets` | 718–729 | tri-state: `--clear-fallback-targets` → `[]`; `--fallback-target` → replace; neither → omitted (no change) | read 718–729 |
 | `runAgentCreate` builds body + `POST /api/agents` | 419 | Only sets a body key when the flag `Changed`; posts to `/api/agents` (line 495) | read 419–496 |
 | Body assembly: description/instructions/runtime-config/custom-args/custom-env/mcp-config/model/thinking-level | 438–488 | `resolveCustomEnv` (460) and `resolveMcpConfig` (465) gate their secret channels; `model` (470) and `thinking_level` (478) are `Changed`-gated pass-throughs; omitted flags are not sent | read 438–488 |
 | `runAgentUpdate` sends `thinking_level` / `mcp_config` | 508 | `thinking_level` added when `--thinking-level` is `Changed` (556); `resolveMcpConfig` adds `mcp_config` (570); `PUT /api/agents/{id}` at 584; `custom_env` is intentionally not a flag here | read 508–585 |
@@ -65,6 +70,10 @@ only.
 | `UpdateAgent` rejects `custom_env` | 910–913 | if `custom_env` present in body → 400 "use PUT /api/agents/{id}/env (or `multica agent env set`)" |
 | `UpdateAgent` persists / clears `mcp_config` | 944–948, 1060–1061 | Tri-state from the raw body: key omitted → no change; literal `null` → `ClearAgentMcpConfig`; object → replace. No 400 like `custom_env` — `mcp_config` IS updatable here |
 | `description` ≤ 255 on update too | 921–924 | same cap re-checked on update |
+| `parseFallbackTargetsInput` validates `fallback_targets` on create | 1073 | each entry's `runtime_id` resolved via `GetAgentRuntimeForWorkspace` — same rule as the primary `runtime_id`, no private-runtime ownership gate; invalid → 400 (`agent_fallback_target.go`) |
+| `fallback_targets` written inside the create tx | 1191 | `replaceAgentFallbackTargetsWithQueries` (delete-then-insert, `position` = submitted order) runs in the same tx as the `agent` row insert, mirroring `invocation_targets` |
+| `UpdateAgentRequest.FallbackTargets` tri-state | 1325–1331, 1632–1646 | key omitted in raw body → no change; key present (including `[]`) → wholesale replace via `replaceAgentFallbackTargets` (1855–1856) — same presence-check pattern as `mcp_config` |
+| `AgentResponse.FallbackTargets` / read paths | 69–73, 826–841 (list, batched), 893 (get), 1222 (create), 1869 (update) | Ordered `[]AgentFallbackTargetDTO`; batch-loaded for list via `loadFallbackTargetsByAgent` to avoid N+1 |
 
 ## Runtime model/thinking discovery — `server/pkg/agent/{models,thinking}.go`
 
@@ -123,3 +132,13 @@ only.
 | `CreateAgentParams` | 739–756 | typed params: `RuntimeConfig []byte`, `Instructions string`, `CustomEnv []byte`, `CustomArgs []byte`, `Model pgtype.Text`, `ThinkingLevel pgtype.Text` |
 | `UpdateAgent` SET | 2552–2566 | COALESCE updates of `runtime_config, instructions, custom_env, custom_args, model, thinking_level` — note `custom_env` is COALESCE-guarded but the handler rejects it before this query runs |
 | `UpdateAgentCustomEnv` (called by the `UpdateAgentEnv` handler) | 2652 | `SET custom_env = $2` — the only write path for env values |
+
+## Fallback targets — `server/migrations/{202,203}_agent_fallback_target*.sql`, `server/pkg/db/queries/agent_fallback_target.sql`, `server/internal/handler/agent_fallback_target.go`
+
+| Contract | Line | Behavior |
+|---|---|---|
+| `agent_fallback_target` table | migration 202 | `id, agent_id, position, runtime_id, model, created_at`. No FK on `agent_id`/`runtime_id` (this repo's migration rule) |
+| Ordering unique index | migration 203 | `CREATE UNIQUE INDEX CONCURRENTLY idx_agent_fallback_target_agent_position ON agent_fallback_target (agent_id, position)`, its own single-statement migration file per this repo's concurrent-index rule |
+| `ListAgentFallbackTargets` / `...ByAgentIDs` / `CreateAgentFallbackTarget` / `DeleteAgentFallbackTargets` | `agent_fallback_target.sql` | Read-ordered-by-position, batch list, insert, wholesale-clear — mirrors `agent_invocation_target.sql` |
+| `DeleteAgentFallbackTargetsByArchivedRuntimeAgents` | `agent_fallback_target.sql` | Application-layer cleanup before an archived agent's hard-delete; called alongside `DeleteAgentInvocationTargetsByArchivedRuntimeAgents` at all 3 runtime hard-delete call sites (`runtime.go` ×2, `runtime_profile.go` ×1) |
+| `agent_fallback_target.go` | whole file | New handler file: DTO, input validation/normalisation, wholesale-replace helpers, response enrichment (single + batch) — same shape as `agent_permission.go` for invocation targets |

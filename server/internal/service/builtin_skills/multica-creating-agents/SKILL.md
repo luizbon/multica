@@ -63,7 +63,8 @@ flags fall through to server defaults rather than sending empty strings.
 
 The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 `instructions`, `runtime_id`, `runtime_config`, `custom_env`, `custom_args`,
-`model`, `thinking_level`, `visibility`, `max_concurrent_tasks`, `mcp_config`.
+`model`, `thinking_level`, `visibility`, `max_concurrent_tasks`, `mcp_config`,
+`fallback_targets`.
 
 ## Field contracts
 
@@ -81,6 +82,7 @@ The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 | `mcp_config` | `agent.mcp_config` (raw JSON) | CLI checks it is a JSON object or `null`; server stores as-is. At create, literal `null` is dropped (no-op); at update, `null` clears the column | daemon → provider (MCP servers) — **runtime-consumed**; redacted on read |
 | `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
 | `max_concurrent_tasks` | `agent.max_concurrent_tasks` | — | scheduler task cap; defaults to `6` |
+| `fallback_targets` | `agent_fallback_target` rows (ordered, one per agent) | each entry's `runtime_id` must resolve to a runtime in this workspace — same rule as the top-level `runtime_id`; `model` unchecked beyond that | **not yet consumed** — config storage only, defaults to `[]` |
 
 Defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
 `custom_args` → `[]`, `visibility` → `private`, `max_concurrent_tasks` → `6`
@@ -112,6 +114,35 @@ value with a 400.
 (codex app-server, openclaw) reject `--model` inside `custom_args` — but that is
 documented CLI guidance, not a server-enforced invariant; nothing in the create
 handler inspects `custom_args` for a model flag.
+
+### fallback_targets
+
+`fallback_targets` is an ordered list of `(runtime_id, model)` pairs, stored one
+per row in `agent_fallback_target`, list order = fallback priority (first entry
+tried first). This is **config storage only** — nothing in the daemon or task
+orchestration reads it yet; it exists so a later failover feature has somewhere
+to persist its target list.
+
+```bash
+multica agent create --name <name> --runtime-id <runtime-id> \
+  --fallback-target <runtime-id-2> \
+  --fallback-target <runtime-id-3>:<model> \
+  --output json
+
+multica agent update <agent-id> --fallback-target <runtime-id-2>:<model> --output json
+multica agent update <agent-id> --clear-fallback-targets --output json
+```
+
+`--fallback-target` is repeatable; each value is `<runtime-id>` or
+`<runtime-id>:<model>`. Update is tri-state on presence of the
+`fallback_targets` key in the request body, mirroring `mcp_config`: the flag
+omitted → no change; `--fallback-target` (one or more) or
+`--clear-fallback-targets` → wholesale replace, including an explicit empty
+list. Each `runtime_id` is validated to resolve to a runtime in the workspace —
+same rule as the top-level `runtime_id` — but is NOT checked against the
+private-runtime ownership gate that guards moving the agent's *primary*
+runtime. `model` is stored as-is with no format validation, matching the
+top-level `model` field's contract.
 
 ## Env & secrets
 
@@ -223,6 +254,8 @@ State-changing (require an explicit instruction — do not run speculatively):
   unknown provider-level literal is — model-specific gaps fail at run time.
 - "`set` and `add` are interchangeable for skills." `set` replaces all
   bindings; using it when you meant `add` silently removes capabilities.
+- "Setting `fallback_targets` makes the agent actually fail over." It does
+  not — nothing consumes this list yet; it is config storage for later work.
 
 ## References
 
