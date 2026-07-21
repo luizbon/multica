@@ -947,8 +947,8 @@ type CreateAgentRequest struct {
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
 	// (private -> private, workspace -> public_to+workspace target). On create
 	// only the caller can be the owner, so targets are accepted unconditionally.
-	PermissionMode     *string                    `json:"permission_mode"`
-	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
+	PermissionMode    *string                    `json:"permission_mode"`
+	InvocationTargets []AgentInvocationTargetDTO `json:"invocation_targets"`
 	// FallbackTargets seeds the ordered fallback (runtime, model) list
 	// (FORK-2). Each runtime_id is validated to resolve to a runtime in the
 	// workspace, same rule as the primary RuntimeID. List order is the
@@ -1320,8 +1320,8 @@ type UpdateAgentRequest struct {
 	// gate is owner/allow-list based and an admin-authored allow-list would
 	// confuse the owner about who can run their agent. permission_mode is
 	// authoritative when present; otherwise legacy visibility is mapped.
-	PermissionMode     *string                     `json:"permission_mode"`
-	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
+	PermissionMode    *string                     `json:"permission_mode"`
+	InvocationTargets *[]AgentInvocationTargetDTO `json:"invocation_targets"`
 	// FallbackTargets is a tri-state, same pattern as mcp_config:
 	//   - field omitted → no change (existing list preserved)
 	//   - field present (including `[]`) → wholesale replace, in submitted order
