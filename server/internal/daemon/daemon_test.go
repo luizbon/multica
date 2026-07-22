@@ -2765,6 +2765,51 @@ func TestReportTaskResult_NonCompletedHitsFailEndpoint(t *testing.T) {
 	}
 }
 
+// TestReportTaskResult_ForwardsResolvedModelOnFail pins the FORK-4 model
+// plumbing at the daemon's outermost edge: TaskResult.Model (set by the
+// runner to the model actually in effect, which may be a FORK-2 fallback
+// target rather than agent.model) must reach the /fail request body
+// untouched, and must be omitted entirely when empty rather than sent as
+// "model":"" -- the server keys the FORK-3 registry on an empty model
+// string differently than a real one (see ratelimit_feed.go).
+func TestReportTaskResult_ForwardsResolvedModelOnFail(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		model     string
+		wantKey   bool
+		wantValue string
+	}{
+		{"resolved fallback model is forwarded", "gpt-5-fallback", true, "gpt-5-fallback"},
+		{"empty model is omitted, not sent as empty string", "", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &reportTaskResultRecorder{}
+			srv := httptest.NewServer(rec.handler(t))
+			t.Cleanup(srv.Close)
+
+			d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+			d.reportTaskResult(context.Background(), "task-model", TaskResult{
+				Status:  "blocked",
+				Comment: "rate limit reached",
+				Model:   tc.model,
+			}, slog.Default())
+
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			got, present := rec.payload["model"]
+			if present != tc.wantKey {
+				t.Fatalf("model key present = %v, want %v (payload: %#v)", present, tc.wantKey, rec.payload)
+			}
+			if tc.wantKey && got != tc.wantValue {
+				t.Errorf("model = %v, want %q", got, tc.wantValue)
+			}
+		})
+	}
+}
+
 // Regression test for the MUL-2780 incident: a short 502 burst on the
 // /complete callback used to (a) drop the task at the first failure and
 // (b) wrongly fall back to /fail, surfacing a successful run as red.
