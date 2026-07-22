@@ -34,3 +34,21 @@ Decision log for customizations made on top of upstream [multica-ai/multica](htt
   - `server/internal/rateregistry/rateregistry_test.go`
 - Risk tier (per FORK.md): 3 (edit to existing shared file — `server/pkg/db/generated/models.go` is appended to by the generated-code update; everything else is net-new)
 - Date: 2026-07-21
+
+## 4: Parse rate-limit reset time from provider errors and feed the registry
+- Branch: feat/issue-4 (per FORK.md issue-branch scheme)
+- Files touched:
+  - `server/pkg/taskfailure/ratelimit_reset.go`, `ratelimit_reset_test.go`
+  - `server/internal/service/ratelimit_feed.go`, `ratelimit_feed_test.go`
+  - `server/internal/service/task.go`
+  - `server/internal/daemon/daemon.go`, `daemon_test.go`, `client.go`, `types.go`
+  - `server/internal/handler/daemon.go`
+  - `server/internal/handler/fail_task_rate_limit_model_test.go`
+  - `server/migrations/206_rate_limit_parse_failure.up.sql`, `.down.sql`
+  - `server/migrations/207_rate_limit_parse_failure_workspace_created_index.up.sql`, `.down.sql`
+  - `server/pkg/db/queries/rate_limit_parse_failure.sql`
+  - `server/pkg/db/generated/rate_limit_parse_failure.sql.go`
+  - `server/pkg/db/generated/models.go`
+  - Mechanical `FailTask` call-site updates (new `model` param): `server/cmd/server/autopilot_listeners_test.go`, `server/internal/handler/chat_attachment_reply_test.go`, `server/internal/handler/chat_input_ownership_test.go`, `server/internal/handler/issue_child_done_test.go`, `server/internal/service/retry_deferred_test.go`, `server/internal/service/task_complete_race_test.go`
+- Risk tier (per FORK.md): 3 (edit to existing shared file — `server/internal/service/task.go`'s `FailTask` signature and its daemon/handler call chain)
+- Date: 2026-07-22
