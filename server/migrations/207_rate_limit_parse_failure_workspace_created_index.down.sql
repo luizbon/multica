@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_rate_limit_parse_failure_workspace_created;

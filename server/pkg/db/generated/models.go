@@ -801,6 +801,16 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+// Raw provider error text FORK-4's rate-limit reset parser could not parse, captured alongside runtime_id/model/timestamp so a human/agent can teach taskfailure.ParseRateLimitReset the pattern. No DB foreign keys: workspace_id / runtime_id relationships are maintained in the application layer (see migration comment).
+type RateLimitParseFailure struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	Model       string             `json:"model"`
+	RawError    string             `json:"raw_error"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
