@@ -240,5 +240,6 @@ type TaskResult struct {
 	WorkDir       string           `json:"work_dir,omitempty"`   // working directory used during execution
 	EnvRoot       string           `json:"-"`                    // env root dir for writing GC metadata (not sent to server)
 	FailureReason string           `json:"-"`                    // classifier forwarded to FailTask on the blocked path; empty falls back to 'agent_error'
+	Model         string           `json:"-"`                    // resolved model for this run, forwarded to FailTask (FORK-4 rate-limit registry feed)
 	Usage         []TaskUsageEntry `json:"usage,omitempty"`      // per-model token usage
 }
