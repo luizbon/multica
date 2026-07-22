@@ -816,6 +816,17 @@ type RuntimeProfile struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Rate-limit status registry keyed by (workspace_id, runtime_id, model) (FORK-3). rate_limited_until is compared to now() lazily at read time; there is no active clear step. Not yet written or read by any caller. No DB foreign keys: workspace_id / runtime_id relationships are maintained in the application layer (see migration comment).
+type RuntimeRateLimit struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	RuntimeID        pgtype.UUID        `json:"runtime_id"`
+	Model            string             `json:"model"`
+	RateLimitedUntil pgtype.Timestamptz `json:"rate_limited_until"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Skill struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
