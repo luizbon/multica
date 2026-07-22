@@ -2904,7 +2904,12 @@ func (s *TaskService) observeChatOutputLocalPath(task db.AgentTaskQueue, body st
 // coarse bucket. Daemon callers that already produced a refined reason
 // (via classifyPoisonedError, the timeout / runtime classifier, etc.)
 // will have their value preserved untouched.
-func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, sessionID, workDir, failureReason string) (*db.AgentTaskQueue, error) {
+//
+// model is the daemon-resolved model actually in effect for this run
+// (may differ from agent.model once FORK-2 fallback targets are consumed).
+// Empty is valid — the rate-limit registry feed (FORK-4) then keys the
+// runtime-wide row with model="".
+func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, sessionID, workDir, failureReason, model string) (*db.AgentTaskQueue, error) {
 	// MUL-2946: synthesise a refined reason from the error text whenever the
 	// caller didn't supply one. This is the last write-path guard against
 	// "agent_error" coarse rows ending up in agent_task_queue.failure_reason
@@ -3039,6 +3044,13 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
+
+	// FORK-4: feed the FORK-3 rate-limit registry whenever the classifier
+	// landed on the provider capacity/rate-limit bucket. Best-effort and
+	// independent of the fail/retry outcome above.
+	if failureReason == string(taskfailure.ReasonAgentProviderCapacityOrRateLimit) {
+		s.feedRateLimitRegistry(ctx, task, errMsg, model)
+	}
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast
